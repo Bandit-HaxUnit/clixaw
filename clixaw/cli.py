@@ -5,6 +5,7 @@ import sys
 from typing import Optional
 
 import click
+import pyperclip
 import requests
 
 from clixaw import api
@@ -95,8 +96,14 @@ def execute_command(command: str, confirm: bool = True) -> int:
     is_flag=True,
     help="Skip confirmation for dangerous commands (use with caution)",
 )
+@click.option(
+    "--copy",
+    "-c",
+    is_flag=True,
+    help="Copy the translated command to clipboard",
+)
 @click.version_option(version="0.1.0", prog_name="clixaw")
-def main(query: tuple, execute: bool, api_url: Optional[str], no_confirm: bool) -> None:
+def main(query: tuple, execute: bool, api_url: Optional[str], no_confirm: bool, copy: bool) -> None:
     """
     Translate natural language queries to shell commands using cmd.xaw.me API.
     
@@ -120,6 +127,17 @@ def main(query: tuple, execute: bool, api_url: Optional[str], no_confirm: bool) 
     try:
         # Call API to translate query
         command = api.translate_query(query_str, api_url=api_url)
+        
+        if copy:
+            # Copy to clipboard
+            try:
+                pyperclip.copy(command)
+                click.echo(click.style("✓ Command copied to clipboard", fg="green"))
+            except Exception as e:
+                click.echo(
+                    click.style(f"Warning: Could not copy to clipboard: {e}", fg="yellow"),
+                    err=True,
+                )
         
         if execute:
             # Execute the command
