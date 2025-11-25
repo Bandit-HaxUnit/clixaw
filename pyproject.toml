@@ -45,7 +45,7 @@ dev = [
 ]
 
 [project.scripts]
-xaw = "clixaw.cli:main"
+xaw = "clixaw.cli:cli"
 
 [tool.setuptools]
 packages = ["clixaw"]

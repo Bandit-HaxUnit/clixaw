@@ -3,13 +3,14 @@
 import os
 import subprocess
 import sys
+from datetime import datetime
 from typing import Optional
 
 import click
 import pyperclip
 import requests
 
-from clixaw import api, config
+from clixaw import api, cache, config, history
 
 
 # Dangerous command patterns that require confirmation
@@ -78,8 +79,10 @@ def execute_command(command: str, confirm: bool = True) -> int:
         return 1
 
 
-@click.command()
-@click.argument("query", nargs=-1, required=True)
+@click.group(invoke_without_command=True)
+@click.version_option(version="0.1.0", prog_name="clixaw")
+@click.pass_context
+@click.argument("query", nargs=-1, required=False)
 @click.option(
     "--execute",
     "-e",
@@ -121,7 +124,47 @@ def execute_command(command: str, confirm: bool = True) -> int:
     is_flag=True,
     help="Copy the translated command to clipboard",
 )
-@click.version_option(version="0.1.0", prog_name="clixaw")
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    help="Disable cache for this request",
+)
+def cli(
+    ctx: click.Context,
+    query: tuple,
+    execute: bool,
+    api_url: Optional[str],
+    provider: Optional[str],
+    api_key: Optional[str],
+    model: Optional[str],
+    no_confirm: bool,
+    copy: bool,
+    no_cache: bool,
+) -> None:
+    """Translate natural language queries to shell commands using cmd.xaw.me API."""
+    # If a subcommand was invoked, don't process the main command
+    if ctx.invoked_subcommand is not None:
+        return
+    
+    # If no query provided, show help
+    if not query:
+        click.echo(ctx.get_help())
+        ctx.exit()
+    
+    # Process the main command
+    main(
+        query=query,
+        execute=execute,
+        api_url=api_url,
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        no_confirm=no_confirm,
+        copy=copy,
+        no_cache=no_cache,
+    )
+
+
 def main(
     query: tuple,
     execute: bool,
@@ -131,6 +174,7 @@ def main(
     model: Optional[str],
     no_confirm: bool,
     copy: bool,
+    no_cache: bool,
 ) -> None:
     """
     Translate natural language queries to shell commands using cmd.xaw.me API.
@@ -172,6 +216,7 @@ def main(
             provider=final_provider,
             api_key=final_api_key,
             model=final_model,
+            use_cache=not no_cache,
         )
         
         if copy:
@@ -188,10 +233,14 @@ def main(
         if execute:
             # Execute the command
             exit_code = execute_command(command, confirm=not no_confirm)
+            # Log to history with execution status
+            history.add_to_history(query_str, command, executed=True, exit_code=exit_code)
             sys.exit(exit_code)
         else:
             # Just print the command
             click.echo(command)
+            # Log to history (not executed)
+            history.add_to_history(query_str, command, executed=False)
     
     except requests.exceptions.ConnectionError:
         click.echo(
@@ -232,6 +281,153 @@ def main(
         sys.exit(1)
 
 
+@cli.command("history")
+@click.option(
+    "--limit",
+    "-n",
+    type=int,
+    default=20,
+    help="Number of history entries to show (default: 20)",
+)
+@click.option(
+    "--all",
+    "-a",
+    is_flag=True,
+    help="Show all history entries",
+)
+def show_history(limit: int, all: bool) -> None:
+    """Show command history."""
+    entries = history.get_history(limit=None if all else limit)
+    
+    if not entries:
+        click.echo("No command history found.")
+        return
+    
+    for idx, entry in enumerate(entries):
+        timestamp_str = entry.get("timestamp", "")
+        try:
+            dt = datetime.fromisoformat(timestamp_str)
+            timestamp_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            pass
+        
+        query = entry.get("query", "")
+        command = entry.get("command", "")
+        executed = entry.get("executed", False)
+        exit_code = entry.get("exit_code")
+        
+        # Format output
+        status = ""
+        if executed:
+            if exit_code == 0:
+                status = click.style(" ✓", fg="green")
+            else:
+                status = click.style(f" ✗ (exit {exit_code})", fg="red")
+        else:
+            status = click.style(" (not executed)", fg="yellow")
+        
+        click.echo(f"\n[{idx}] {timestamp_str}{status}")
+        click.echo(f"  Query: {query}")
+        click.echo(f"  Command: {command}")
+
+
+@cli.command("repeat")
+@click.argument("index", type=int, required=True)
+@click.option(
+    "--execute",
+    "-e",
+    is_flag=True,
+    help="Execute the command instead of just printing it",
+)
+@click.option(
+    "--no-confirm",
+    is_flag=True,
+    help="Skip confirmation for dangerous commands (use with caution)",
+)
+def repeat_command(index: int, execute: bool, no_confirm: bool) -> None:
+    """Repeat a command from history by index."""
+    entry = history.get_history_entry(index)
+    
+    if entry is None:
+        click.echo(
+            click.style(f"Error: No history entry found at index {index}", fg="red"),
+            err=True,
+        )
+        sys.exit(1)
+    
+    command = entry.get("command", "")
+    query = entry.get("query", "")
+    
+    if not command:
+        click.echo(
+            click.style("Error: History entry has no command", fg="red"),
+            err=True,
+        )
+        sys.exit(1)
+    
+    click.echo(click.style(f"Repeating: {query}", fg="cyan"))
+    click.echo(f"Command: {command}")
+    
+    if execute:
+        exit_code = execute_command(command, confirm=not no_confirm)
+        # Log the repeat to history
+        history.add_to_history(
+            f"[repeat] {query}",
+            command,
+            executed=True,
+            exit_code=exit_code,
+        )
+        sys.exit(exit_code)
+    else:
+        click.echo(command)
+
+
+@cli.command("clear-history")
+@click.confirmation_option(
+    prompt="Are you sure you want to clear all command history?",
+)
+def clear_history_cmd() -> None:
+    """Clear all command history."""
+    history.clear_history()
+    click.echo(click.style("✓ Command history cleared", fg="green"))
+
+
+@cli.command("clear-cache")
+@click.confirmation_option(
+    prompt="Are you sure you want to clear all cached API responses?",
+)
+def clear_cache_cmd() -> None:
+    """Clear all cached API responses."""
+    cache.clear_cache()
+    click.echo(click.style("✓ Cache cleared", fg="green"))
+
+
+@cli.command("cache-stats")
+def cache_stats_cmd() -> None:
+    """Show cache statistics."""
+    stats = cache.get_cache_stats()
+    
+    click.echo("Cache Statistics:")
+    click.echo(f"  Size: {stats['size']} entries")
+    
+    if stats["oldest_entry"]:
+        try:
+            dt = datetime.fromisoformat(stats["oldest_entry"])
+            click.echo(f"  Oldest entry: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        except (ValueError, TypeError):
+            click.echo(f"  Oldest entry: {stats['oldest_entry']}")
+    
+    if stats["newest_entry"]:
+        try:
+            dt = datetime.fromisoformat(stats["newest_entry"])
+            click.echo(f"  Newest entry: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        except (ValueError, TypeError):
+            click.echo(f"  Newest entry: {stats['newest_entry']}")
+    
+    if stats["size"] == 0:
+        click.echo(click.style("  Cache is empty", fg="yellow"))
+
+
 if __name__ == "__main__":
-    main()
+    cli()
 
