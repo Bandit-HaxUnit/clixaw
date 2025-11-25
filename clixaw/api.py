@@ -12,13 +12,22 @@ def get_api_url() -> str:
     return os.getenv("XAW_API_URL", "https://cmd.xaw.me")
 
 
-def translate_query(query: str, api_url: Optional[str] = None) -> str:
+def translate_query(
+    query: str,
+    api_url: Optional[str] = None,
+    provider: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
     """
     Translate a natural language query to a shell command.
     
     Args:
         query: Natural language query string
         api_url: Optional API URL (defaults to XAW_API_URL env var or https://cmd.xaw.me)
+        provider: Optional provider name (e.g., "openai", "gemini")
+        api_key: Optional API key for custom provider
+        model: Optional model override (e.g., "gemini-pro", "gpt-4")
     
     Returns:
         Translated shell command as plain text
@@ -33,12 +42,21 @@ def translate_query(query: str, api_url: Optional[str] = None) -> str:
     # Remove trailing slash if present
     api_url = api_url.rstrip("/")
     
+    # Build headers if provider is specified
+    headers = {}
+    if provider:
+        headers["X-Provider"] = provider
+    if api_key:
+        headers["X-API-Key"] = api_key
+    if model:
+        headers["X-Model"] = model
+    
     # Try query parameter style first (more reliable for special characters)
     try:
         encoded_query = urllib.parse.quote(query, safe="")
         url = f"{api_url}/?q={encoded_query}"
         
-        response = requests.get(url, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         
         # API returns plain text, strip whitespace
@@ -55,7 +73,7 @@ def translate_query(query: str, api_url: Optional[str] = None) -> str:
             encoded_query = urllib.parse.quote(query, safe="")
             url = f"{api_url}/{encoded_query}"
             
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             
             command = response.text.strip()

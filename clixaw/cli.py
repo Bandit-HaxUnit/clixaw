@@ -1,5 +1,6 @@
 """Command-line interface for clixaw."""
 
+import os
 import subprocess
 import sys
 from typing import Optional
@@ -8,7 +9,7 @@ import click
 import pyperclip
 import requests
 
-from clixaw import api
+from clixaw import api, config
 
 
 # Dangerous command patterns that require confirmation
@@ -89,7 +90,25 @@ def execute_command(command: str, confirm: bool = True) -> int:
     "--api-url",
     default=None,
     envvar="XAW_API_URL",
-    help="API URL (defaults to XAW_API_URL env var or https://cmd.xaw.me)",
+    help="API URL (defaults to XAW_API_URL env var, config file, or https://cmd.xaw.me)",
+)
+@click.option(
+    "--provider",
+    default=None,
+    envvar="XAW_PROVIDER",
+    help="Provider name (e.g., openai, gemini). Overrides config file and env var.",
+)
+@click.option(
+    "--api-key",
+    default=None,
+    envvar="XAW_API_KEY",
+    help="API key for custom provider. Overrides config file and env var.",
+)
+@click.option(
+    "--model",
+    default=None,
+    envvar="XAW_MODEL",
+    help="Model override (e.g., gemini-pro, gpt-4). Overrides config file and env var.",
 )
 @click.option(
     "--no-confirm",
@@ -103,7 +122,16 @@ def execute_command(command: str, confirm: bool = True) -> int:
     help="Copy the translated command to clipboard",
 )
 @click.version_option(version="0.1.0", prog_name="clixaw")
-def main(query: tuple, execute: bool, api_url: Optional[str], no_confirm: bool, copy: bool) -> None:
+def main(
+    query: tuple,
+    execute: bool,
+    api_url: Optional[str],
+    provider: Optional[str],
+    api_key: Optional[str],
+    model: Optional[str],
+    no_confirm: bool,
+    copy: bool,
+) -> None:
     """
     Translate natural language queries to shell commands using cmd.xaw.me API.
     
@@ -124,9 +152,27 @@ def main(query: tuple, execute: bool, api_url: Optional[str], no_confirm: bool, 
         click.echo(click.style("Error: Query cannot be empty", fg="red"), err=True)
         sys.exit(1)
     
+    # Load configuration from config file
+    config_provider = config.get_provider_config()
+    
+    # Priority: CLI flags > Environment variables > Config file > Defaults
+    # For provider, api_key, model: CLI > Env > Config
+    final_provider = provider or os.getenv("XAW_PROVIDER") or config_provider.get("provider")
+    final_api_key = api_key or os.getenv("XAW_API_KEY") or config_provider.get("api_key")
+    final_model = model or os.getenv("XAW_MODEL") or config_provider.get("model")
+    
+    # For api_url: CLI > Env > Config > Default
+    final_api_url = api_url or os.getenv("XAW_API_URL") or config_provider.get("api_url")
+    
     try:
         # Call API to translate query
-        command = api.translate_query(query_str, api_url=api_url)
+        command = api.translate_query(
+            query_str,
+            api_url=final_api_url,
+            provider=final_provider,
+            api_key=final_api_key,
+            model=final_model,
+        )
         
         if copy:
             # Copy to clipboard
