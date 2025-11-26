@@ -7,6 +7,7 @@ from typing import Optional
 import requests
 
 from clixaw import cache
+from clixaw import __version__
 
 
 def get_api_url() -> str:
@@ -55,7 +56,7 @@ def translate_query(
             return cached_command
     
     # Build headers if provider is specified
-    headers = {}
+    headers = {"X-xaw-cli": __version__}
     if provider:
         headers["X-Provider"] = provider
     if api_key:

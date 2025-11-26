@@ -10,7 +10,8 @@ import click
 import pyperclip
 import requests
 
-from clixaw import api, cache, config, history
+from clixaw import api, cache, config
+import clixaw.history as history_module
 
 
 # Dangerous command patterns that require confirmation
@@ -79,9 +80,8 @@ def execute_command(command: str, confirm: bool = True) -> int:
         return 1
 
 
-@click.group(invoke_without_command=True)
+@click.command()
 @click.version_option(version="0.1.0", prog_name="clixaw")
-@click.pass_context
 @click.argument("query", nargs=-1, required=False)
 @click.option(
     "--execute",
@@ -129,8 +129,46 @@ def execute_command(command: str, confirm: bool = True) -> int:
     is_flag=True,
     help="Disable cache for this request",
 )
+@click.option(
+    "--history",
+    is_flag=True,
+    help="Show command history",
+)
+@click.option(
+    "--repeat",
+    type=int,
+    default=None,
+    help="Repeat a command from history by index",
+)
+@click.option(
+    "--clear-history",
+    is_flag=True,
+    help="Clear all command history",
+)
+@click.option(
+    "--clear-cache",
+    is_flag=True,
+    help="Clear all cached API responses",
+)
+@click.option(
+    "--cache-stats",
+    is_flag=True,
+    help="Show cache statistics",
+)
+@click.option(
+    "--limit",
+    "-n",
+    type=int,
+    default=20,
+    help="Number of history entries to show (default: 20, used with --history)",
+)
+@click.option(
+    "--all",
+    "-a",
+    is_flag=True,
+    help="Show all history entries (used with --history)",
+)
 def cli(
-    ctx: click.Context,
     query: tuple,
     execute: bool,
     api_url: Optional[str],
@@ -140,16 +178,48 @@ def cli(
     no_confirm: bool,
     copy: bool,
     no_cache: bool,
+    history: bool,
+    repeat: Optional[int],
+    clear_history: bool,
+    clear_cache: bool,
+    cache_stats: bool,
+    limit: int,
+    all: bool,
 ) -> None:
     """Translate natural language queries to shell commands using cmd.xaw.me API."""
-    # If a subcommand was invoked, don't process the main command
-    if ctx.invoked_subcommand is not None:
+    # Handle flag-based commands first
+    if cache_stats:
+        cache_stats_cmd()
+        return
+    
+    if clear_cache:
+        if not click.confirm("Are you sure you want to clear all cached API responses?"):
+            click.echo("Aborted.")
+            return
+        cache.clear_cache()
+        click.echo(click.style("✓ Cache cleared", fg="green"))
+        return
+    
+    if clear_history:
+        if not click.confirm("Are you sure you want to clear all command history?"):
+            click.echo("Aborted.")
+            return
+        history_module.clear_history()
+        click.echo(click.style("✓ Command history cleared", fg="green"))
+        return
+    
+    if history:
+        show_history(limit, all)
+        return
+    
+    if repeat is not None:
+        repeat_command(repeat, execute, no_confirm)
         return
     
     # If no query provided, show help
     if not query:
-        click.echo(ctx.get_help())
-        ctx.exit()
+        click.echo(click.get_current_context().get_help())
+        return
     
     # Process the main command
     main(
@@ -234,13 +304,13 @@ def main(
             # Execute the command
             exit_code = execute_command(command, confirm=not no_confirm)
             # Log to history with execution status
-            history.add_to_history(query_str, command, executed=True, exit_code=exit_code)
+            history_module.add_to_history(query_str, command, executed=True, exit_code=exit_code)
             sys.exit(exit_code)
         else:
             # Just print the command
             click.echo(command)
             # Log to history (not executed)
-            history.add_to_history(query_str, command, executed=False)
+            history_module.add_to_history(query_str, command, executed=False)
     
     except requests.exceptions.ConnectionError:
         click.echo(
@@ -281,23 +351,9 @@ def main(
         sys.exit(1)
 
 
-@cli.command("history")
-@click.option(
-    "--limit",
-    "-n",
-    type=int,
-    default=20,
-    help="Number of history entries to show (default: 20)",
-)
-@click.option(
-    "--all",
-    "-a",
-    is_flag=True,
-    help="Show all history entries",
-)
 def show_history(limit: int, all: bool) -> None:
     """Show command history."""
-    entries = history.get_history(limit=None if all else limit)
+    entries = history_module.get_history(limit=None if all else limit)
     
     if not entries:
         click.echo("No command history found.")
@@ -331,22 +387,9 @@ def show_history(limit: int, all: bool) -> None:
         click.echo(f"  Command: {command}")
 
 
-@cli.command("repeat")
-@click.argument("index", type=int, required=True)
-@click.option(
-    "--execute",
-    "-e",
-    is_flag=True,
-    help="Execute the command instead of just printing it",
-)
-@click.option(
-    "--no-confirm",
-    is_flag=True,
-    help="Skip confirmation for dangerous commands (use with caution)",
-)
 def repeat_command(index: int, execute: bool, no_confirm: bool) -> None:
     """Repeat a command from history by index."""
-    entry = history.get_history_entry(index)
+    entry = history_module.get_history_entry(index)
     
     if entry is None:
         click.echo(
@@ -371,7 +414,7 @@ def repeat_command(index: int, execute: bool, no_confirm: bool) -> None:
     if execute:
         exit_code = execute_command(command, confirm=not no_confirm)
         # Log the repeat to history
-        history.add_to_history(
+        history_module.add_to_history(
             f"[repeat] {query}",
             command,
             executed=True,
@@ -382,27 +425,6 @@ def repeat_command(index: int, execute: bool, no_confirm: bool) -> None:
         click.echo(command)
 
 
-@cli.command("clear-history")
-@click.confirmation_option(
-    prompt="Are you sure you want to clear all command history?",
-)
-def clear_history_cmd() -> None:
-    """Clear all command history."""
-    history.clear_history()
-    click.echo(click.style("✓ Command history cleared", fg="green"))
-
-
-@cli.command("clear-cache")
-@click.confirmation_option(
-    prompt="Are you sure you want to clear all cached API responses?",
-)
-def clear_cache_cmd() -> None:
-    """Clear all cached API responses."""
-    cache.clear_cache()
-    click.echo(click.style("✓ Cache cleared", fg="green"))
-
-
-@cli.command("cache-stats")
 def cache_stats_cmd() -> None:
     """Show cache statistics."""
     stats = cache.get_cache_stats()
